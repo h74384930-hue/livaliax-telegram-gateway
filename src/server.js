@@ -17,6 +17,20 @@ const readJson=async req=>{let body="";for await(const chunk of req){body+=chunk
 const newClient=async()=>{const client=new TelegramClient(new StringSession(""),apiId,apiHash,{connectionRetries:3});await client.connect();return client;};
 const scoped=(challenge,identity)=>challenge&&challenge.tenantId===identity.tenantId&&challenge.userId===identity.userId;
 
+async function connectedResult(challenge,id){
+  if(!challenge.account){
+    const me=await challenge.client.getMe();
+    challenge.account={
+      account_id:String(me?.id||""),
+      username:me?.username||null,
+      display_name:[me?.firstName,me?.lastName].filter(Boolean).join(" ")||null,
+    };
+    if(!challenge.account.account_id) throw new Error("telegram_account_identity_unavailable");
+  }
+  challenge.status="connected";
+  return {challenge_id:id,status:"connected",session:String(challenge.client.session.save()),...challenge.account};
+}
+
 async function startQr(identity){
   const client=await newClient();
   const qr=await client.invoke(new Api.auth.ExportLoginToken({apiId,apiHash,exceptIds:[]}));
@@ -46,17 +60,16 @@ async function confirmPhone(identity,body){
     if(error?.errorMessage==="SESSION_PASSWORD_NEEDED") { challenge.status="password_required"; return {challenge_id:body.challenge_id,next_step:"password"}; }
     throw error;
   }
-  challenge.status="connected";
-  return {challenge_id:body.challenge_id,status:"connected",session:String(challenge.client.session.save())};
+  return connectedResult(challenge,body.challenge_id);
 }
 
 async function qrStatus(identity,id){
   const challenge=store.get(id);
   if(!scoped(challenge,identity)||challenge.type!=="qr") throw Object.assign(new Error("telegram_challenge_not_found"),{status:404});
-  if(challenge.status==="connected") return {challenge_id:id,status:"connected",session:String(challenge.client.session.save())};
+  if(challenge.status==="connected") return connectedResult(challenge,id);
   try {
     const result=await challenge.client.invoke(new Api.auth.ImportLoginToken({token:Buffer.from(challenge.token.split("token=")[1],"base64url")}));
-    if(result instanceof Api.auth.LoginTokenSuccess){challenge.status="connected";return {challenge_id:id,status:"connected",session:String(challenge.client.session.save())};}
+    if(result instanceof Api.auth.LoginTokenSuccess){return connectedResult(challenge,id);}
   } catch(error) {
     if(!["AUTH_TOKEN_INVALID","AUTH_TOKEN_EXPIRED"].includes(error?.errorMessage)) throw error;
     if(error?.errorMessage==="AUTH_TOKEN_EXPIRED") challenge.status="expired";
